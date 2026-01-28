@@ -10,6 +10,7 @@
     "start:prod": "node dist/server.js",
     "migrate": "ts-node src/db/migrate.ts",
     "backfill": "ts-node src/services/ingestion/backfillESPN.ts",
+    "backfill:improved": "ts-node src/services/ingestion/backfillESPNImproved.ts",
     "backfill:old": "ts-node src/services/ingestion/backfillLast15Games.ts",
     "refresh:daily": "ts-node src/services/ingestion/dailyRefreshESPN.ts",
     "refresh:old": "ts-node src/services/ingestion/dailyRefreshJob.ts",

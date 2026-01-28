@@ -10,7 +10,13 @@ export const pool = new Pool(
   process.env.DATABASE_URL
     ? {
         connectionString: process.env.DATABASE_URL,
-        ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : undefined
+        ssl: process.env.NODE_ENV === 'production' ? { rejectUnauthorized: false } : undefined,
+        // Connection pool settings to prevent timeouts
+        max: 10, // Maximum pool size
+        idleTimeoutMillis: 30000, // Close idle clients after 30 seconds
+        connectionTimeoutMillis: 10000, // Timeout after 10 seconds
+        keepAlive: true,
+        keepAliveInitialDelayMillis: 10000,
       }
     : {
         host: process.env.DB_HOST || 'localhost',
@@ -18,6 +24,12 @@ export const pool = new Pool(
         database: process.env.DB_NAME || 'nba_predictor',
         user: process.env.DB_USER || 'postgres',
         password: process.env.DB_PASSWORD,
+        // Connection pool settings
+        max: 10,
+        idleTimeoutMillis: 30000,
+        connectionTimeoutMillis: 10000,
+        keepAlive: true,
+        keepAliveInitialDelayMillis: 10000,
       }
 );
 
