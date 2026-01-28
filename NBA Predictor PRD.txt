@@ -1,0 +1,105 @@
+CLAUDE BUILD BRIEF
+NBA Player Props Prediction Platform
+
+PURPOSE
+You are an AI engineering agent (Claude). Your task is to design and implement a production-grade NBA player props prediction platform strictly based on deterministic rules. Do not add machine learning, betting odds, or extra features beyond what is specified.
+This document is intentionally concise and optimized for AI execution.
+---
+CORE OBJECTIVE
+Build a fully functional web application that allows users to:
+1. View historical NBA player stats (last 15 team matches)
+2. See deterministic player prop predictions for upcoming matches
+3. Internally track prediction accuracy (admin only)
+Target user: Sports bettors
+Access model: Free, no login
+Tone: Betting-adjacent, informational
+---
+SCOPE
+Sport: NBA only
+Games: Regular season + playoffs
+Predictions allowed only if match starts within 24 hours
+If match is >24 hours away, display:
+“Predictions coming soon. We are working on updated data.”
+Pre-match predictions only. No live or in-game logic.
+---
+DATA RULES (CRITICAL)
+Use the last 15 matches played by the PLAYER’S TEAM.
+Include all 15 matches even if the player did not play.
+If Minutes = 0:
+- Points, Rebounds, Assists must be imputed
+- Imputed value = average of matches where Minutes > 0
+Player trades:
+- Use last 15 games regardless of team
+Data refresh:
+- Once daily at 12:00 PM IST
+- Use all completed games until refresh time
+---
+FEATURE 1: PLAYER HISTORICAL STATS
+Display a table per player with exactly these columns:
+Date | Opponent | Minutes | Points | Rebounds | Assists
+No additional stats.
+---
+FEATURE 2: PLAYER PROPS PREDICTION
+For each player, output ONE final prop per stat.
+POINTS THRESHOLDS:
+10+, 15+, 20+, 25+, 30+
+REBOUNDS THRESHOLDS:
+4+, 6+, 8+, 10+, 12+
+ASSISTS THRESHOLDS:
+2+, 4+, 6+, 8+, 10+
+Threshold interpretation:
+15+ means >= 15 (same rule for all stats)
+DETERMINISTIC LOGIC:
+1. Evaluate thresholds from highest to lowest
+2. For each threshold, count matches where stat >= threshold
+3. If count >= 14 out of 15 ? select that threshold
+4. Output ONLY the highest qualifying threshold
+5. If none qualify ? output no prop
+Missed matches use imputed averages and count fully.
+If player is ruled OUT:
+- Show label: “Not Expected to Play”
+- Disable prediction for that player
+---
+FEATURE 3: ACCURACY TRACKING (ADMIN ONLY)
+After match completion:
+- Compare actual stat vs predicted threshold
+- If actual >= predicted ? HIT
+- Else ? MISS
+Store accuracy per:
+Match | Player | Stat | Prediction | Actual | Result
+Accuracy is NOT shown to users.
+---
+UI REQUIREMENTS
+Platform: Fully responsive web
+Layout: Table-based
+User actions:
+- Select date
+- Select match
+- Sort players by predicted prop value
+No login, no personalization.
+---
+DATA SOURCES
+Use an open or free NBA data source providing:
+- Match schedules
+- Player game logs
+- Team rosters
+- Player status (injury / out)
+Source selection is up to you.
+---
+STRICT RULES FOR CLAUDE
+- Do NOT introduce machine learning
+- Do NOT add confidence scores
+- Do NOT change thresholds
+- Do NOT add betting odds
+- Do NOT optimize logic beyond what is stated
+Build clean, modular, extensible code so ML can be added later.
+---
+DELIVERABLES EXPECTED
+1. System architecture
+2. Database schema
+3. Backend APIs
+4. Data ingestion pipeline
+5. Prediction engine implementation
+6. Accuracy tracking mechanism
+END OF BUILD BRIEF
+

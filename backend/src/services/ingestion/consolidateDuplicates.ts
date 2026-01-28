@@ -1,0 +1,144 @@
+/**
+ * Consolidate Duplicate Players
+ *
+ * Merges duplicate player entries by:
+ * 1. Moving all stats from old entry to new entry
+ * 2. Moving all predictions from old entry to new entry
+ * 3. Deleting the old entry
+ */
+
+import pool from '../../config/database';
+
+async function consolidateDuplicates() {
+  console.log('\n===========================================');
+  console.log('🔧 Consolidating Duplicate Players');
+  console.log('===========================================\n');
+
+  const client = await pool.connect();
+
+  try {
+    await client.query('BEGIN');
+
+    // Find all duplicate players
+    const dupes = await client.query(`
+      SELECT first_name, last_name, array_agg(id ORDER BY id) as ids
+      FROM players
+      GROUP BY first_name, last_name
+      HAVING COUNT(*) > 1
+    `);
+
+    console.log(`Found ${dupes.rows.length} duplicate player names\n`);
+
+    for (const dup of dupes.rows) {
+      const playerName = `${dup.first_name} ${dup.last_name}`;
+      console.log(`Processing: ${playerName}`);
+
+      // Get stats count for each entry
+      const statsPerEntry = [];
+      for (const id of dup.ids) {
+        const stats = await client.query(
+          'SELECT COUNT(*) as count FROM player_game_stats WHERE player_id = $1',
+          [id]
+        );
+        statsPerEntry.push({ id, count: parseInt(stats.rows[0].count) });
+      }
+
+      // Keep the entry with the most stats
+      statsPerEntry.sort((a, b) => b.count - a.count);
+      const keepId = statsPerEntry[0].id;
+      const removeIds = statsPerEntry.slice(1).map(e => e.id);
+
+      console.log(`  ✓ Keeping ID ${keepId} (${statsPerEntry[0].count} games)`);
+      console.log(`  ✗ Removing IDs: ${removeIds.join(', ')}`);
+
+      for (const removeId of removeIds) {
+        // Move stats to kept player
+        const movedStats = await client.query(
+          'UPDATE player_game_stats SET player_id = $1 WHERE player_id = $2',
+          [keepId, removeId]
+        );
+        console.log(`    - Moved ${movedStats.rowCount} stats from ID ${removeId} to ${keepId}`);
+
+        // Move predictions to kept player
+        const movedPreds = await client.query(
+          'UPDATE predictions SET player_id = $1 WHERE player_id = $2',
+          [keepId, removeId]
+        );
+        if (movedPreds.rowCount && movedPreds.rowCount > 0) {
+          console.log(`    - Moved ${movedPreds.rowCount} predictions from ID ${removeId} to ${keepId}`);
+        }
+
+        // Delete the duplicate player
+        await client.query('DELETE FROM players WHERE id = $1', [removeId]);
+        console.log(`    - Deleted player ID ${removeId}`);
+      }
+
+      console.log();
+    }
+
+    // Update player teams based on most recent game
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('Updating player team assignments...');
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+
+    const updateResult = await client.query(`
+      UPDATE players p
+      SET current_team_id = (
+        SELECT pgs.team_id
+        FROM player_game_stats pgs
+        WHERE pgs.player_id = p.id
+        ORDER BY pgs.game_date DESC, pgs.id DESC
+        LIMIT 1
+      )
+      WHERE EXISTS (
+        SELECT 1 FROM player_game_stats WHERE player_id = p.id
+      )
+    `);
+
+    console.log(`✓ Updated ${updateResult.rowCount} player team assignments\n`);
+
+    await client.query('COMMIT');
+
+    console.log('===========================================');
+    console.log('✅ Consolidation Complete!');
+    console.log('===========================================\n');
+
+    // Verify LeBron
+    const lebron = await client.query(`
+      SELECT p.id, p.first_name, p.last_name, t.abbreviation as team, COUNT(pgs.id) as games
+      FROM players p
+      LEFT JOIN teams t ON p.current_team_id = t.id
+      LEFT JOIN player_game_stats pgs ON p.id = pgs.player_id
+      WHERE p.first_name = 'LeBron' AND p.last_name = 'James'
+      GROUP BY p.id, p.first_name, p.last_name, t.abbreviation
+    `);
+
+    console.log('LeBron James after consolidation:');
+    lebron.rows.forEach(r => {
+      console.log(`  ID: ${r.id} | Team: ${r.team} | Games: ${r.games}`);
+    });
+    console.log();
+
+  } catch (error) {
+    await client.query('ROLLBACK');
+    console.error('❌ Error:', error);
+    throw error;
+  } finally {
+    client.release();
+    await pool.end();
+  }
+}
+
+if (require.main === module) {
+  consolidateDuplicates()
+    .then(() => {
+      console.log('✅ Script completed! Exiting...\n');
+      process.exit(0);
+    })
+    .catch((error) => {
+      console.error('❌ Script failed:', error);
+      process.exit(1);
+    });
+}
+
+export { consolidateDuplicates };
