@@ -261,4 +261,80 @@ router.post('/fix-times', async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * GET /api/admin/debug-match/:matchId
+ * Debug why predictions aren't generating for a match
+ */
+router.get('/debug-match/:matchId', async (req: Request, res: Response) => {
+  try {
+    const matchId = parseInt(req.params.matchId);
+
+    // Get match info
+    const match = await pool.query(`
+      SELECT m.id, m.home_team_id, m.away_team_id,
+             ht.name as home_name, ht.abbreviation as home,
+             at.name as away_name, at.abbreviation as away
+      FROM matches m
+      JOIN teams ht ON m.home_team_id = ht.id
+      JOIN teams at ON m.away_team_id = at.id
+      WHERE m.id = $1
+    `, [matchId]);
+
+    if (match.rows.length === 0) {
+      return res.status(404).json({ success: false, error: 'Match not found' });
+    }
+
+    const m = match.rows[0];
+
+    // Check players for both teams
+    const homePlayers = await pool.query(
+      'SELECT COUNT(*) as count FROM players WHERE current_team_id = $1',
+      [m.home_team_id]
+    );
+
+    const awayPlayers = await pool.query(
+      'SELECT COUNT(*) as count FROM players WHERE current_team_id = $1',
+      [m.away_team_id]
+    );
+
+    // Check eligible players (15+ games)
+    const eligible = await pool.query(`
+      SELECT p.id, p.first_name || ' ' || p.last_name as name,
+             t.abbreviation, COUNT(pgs.id) as games
+      FROM players p
+      JOIN teams t ON p.current_team_id = t.id
+      LEFT JOIN player_game_stats pgs ON p.id = pgs.player_id
+      WHERE t.id IN ($1, $2)
+      GROUP BY p.id, p.first_name, p.last_name, t.abbreviation
+      HAVING COUNT(pgs.id) >= 15
+      ORDER BY games DESC
+      LIMIT 10
+    `, [m.home_team_id, m.away_team_id]);
+
+    res.json({
+      success: true,
+      match: {
+        id: m.id,
+        matchup: `${m.away} @ ${m.home}`,
+        homeTeam: { id: m.home_team_id, name: m.home_name, abbreviation: m.home },
+        awayTeam: { id: m.away_team_id, name: m.away_name, abbreviation: m.away }
+      },
+      playerCounts: {
+        home: parseInt(homePlayers.rows[0].count),
+        away: parseInt(awayPlayers.rows[0].count),
+        eligibleTotal: eligible.rows.length
+      },
+      sampleEligiblePlayers: eligible.rows
+    });
+
+  } catch (error) {
+    console.error('Debug failed:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Debug failed',
+      message: (error as Error).message
+    });
+  }
+});
+
 export default router;
