@@ -127,4 +127,98 @@ router.post('/generate-predictions', async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * POST /api/admin/refresh-times
+ * Refresh game times from ESPN for all scheduled matches
+ */
+router.post('/refresh-times', async (req: Request, res: Response) => {
+  try {
+    console.log('🔄 Refreshing schedule times from ESPN...');
+
+    // Dynamic import
+    const { fetchESPNScoreboard, convertESPNGame } = require('../services/ingestion/espnApiClient');
+
+    // Get all scheduled matches
+    const scheduled = await pool.query(`
+      SELECT id, nba_game_id, game_date, game_time
+      FROM matches
+      WHERE status = 'scheduled'
+      ORDER BY game_date
+    `);
+
+    console.log(`Found ${scheduled.rows.length} scheduled matches`);
+
+    // Group by date
+    const dateMap = new Map<string, any[]>();
+    for (const match of scheduled.rows) {
+      const date = match.game_date.toISOString().split('T')[0];
+      if (!dateMap.has(date)) {
+        dateMap.set(date, []);
+      }
+      dateMap.get(date)!.push(match);
+    }
+
+    let updated = 0;
+    let unchanged = 0;
+    const updates = [];
+
+    // Process each date
+    for (const [date, matches] of dateMap.entries()) {
+      try {
+        const espnGames = await fetchESPNScoreboard(date);
+
+        for (const match of matches) {
+          const espnGame = espnGames.find((g: any) => g.id === match.nba_game_id);
+
+          if (espnGame) {
+            const converted = convertESPNGame(espnGame);
+            const oldTime = new Date(match.game_time);
+            const newTime = new Date(converted.gameTime);
+
+            if (oldTime.getTime() !== newTime.getTime()) {
+              await pool.query(
+                'UPDATE matches SET game_time = $1, game_date = $2 WHERE id = $3',
+                [newTime, new Date(converted.gameDate), match.id]
+              );
+
+              updates.push({
+                matchId: match.id,
+                oldTime: oldTime.toISOString(),
+                newTime: newTime.toISOString()
+              });
+
+              updated++;
+            } else {
+              unchanged++;
+            }
+          }
+        }
+
+        await new Promise(r => setTimeout(r, 300));
+      } catch (error) {
+        console.error(`Error processing date ${date}:`, error);
+      }
+    }
+
+    console.log(`✅ Refresh complete: ${updated} updated, ${unchanged} unchanged`);
+
+    res.json({
+      success: true,
+      message: 'Schedule times refreshed from ESPN',
+      updated,
+      unchanged,
+      total: scheduled.rows.length,
+      updates: updates.slice(0, 10) // Show first 10 updates
+    });
+
+  } catch (error) {
+    console.error('❌ Refresh failed:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to refresh times',
+      message: (error as Error).message
+    });
+  }
+});
+
 export default router;
