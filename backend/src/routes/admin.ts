@@ -373,4 +373,80 @@ router.post('/run-daily-refresh', async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * GET /api/admin/db-stats
+ * Get current database statistics
+ */
+router.get('/db-stats', async (req: Request, res: Response) => {
+  try {
+    // Get total counts
+    const matchCount = await pool.query('SELECT COUNT(*) as count FROM matches');
+    const statsCount = await pool.query('SELECT COUNT(*) as count FROM player_game_stats');
+    const playerCount = await pool.query('SELECT COUNT(*) as count FROM players');
+
+    // Get players with 15+ games
+    const eligibleCount = await pool.query(`
+      SELECT COUNT(DISTINCT p.id) as count
+      FROM players p
+      JOIN player_game_stats pgs ON p.id = pgs.player_id
+      GROUP BY p.id
+      HAVING COUNT(pgs.id) >= 15
+    `);
+
+    // Get team distribution
+    const teamStats = await pool.query(`
+      SELECT t.abbreviation, t.name,
+             COUNT(DISTINCT p.id) as players,
+             COUNT(DISTINCT pgs.id) as total_stats,
+             COUNT(DISTINCT CASE WHEN pgs_count.games >= 15 THEN p.id END) as eligible_players
+      FROM teams t
+      LEFT JOIN players p ON p.current_team_id = t.id
+      LEFT JOIN player_game_stats pgs ON p.id = pgs.player_id
+      LEFT JOIN (
+        SELECT player_id, COUNT(*) as games
+        FROM player_game_stats
+        GROUP BY player_id
+      ) pgs_count ON p.id = pgs_count.player_id
+      GROUP BY t.id, t.abbreviation, t.name
+      ORDER BY eligible_players DESC, total_stats DESC
+      LIMIT 30
+    `);
+
+    // Get recent matches
+    const recentMatches = await pool.query(`
+      SELECT m.id, m.nba_game_id, m.game_date, m.status,
+             ht.abbreviation as home, at.abbreviation as away,
+             COUNT(pgs.id) as stats_count
+      FROM matches m
+      JOIN teams ht ON m.home_team_id = ht.id
+      JOIN teams at ON m.away_team_id = at.id
+      LEFT JOIN player_game_stats pgs ON m.id = pgs.match_id
+      WHERE m.status = 'completed'
+      GROUP BY m.id, m.nba_game_id, m.game_date, m.status, ht.abbreviation, at.abbreviation
+      ORDER BY m.game_date DESC
+      LIMIT 10
+    `);
+
+    res.json({
+      success: true,
+      totals: {
+        matches: parseInt(matchCount.rows[0].count),
+        playerStats: parseInt(statsCount.rows[0].count),
+        players: parseInt(playerCount.rows[0].count),
+        eligiblePlayers: eligibleCount.rows.length
+      },
+      teamDistribution: teamStats.rows,
+      recentMatches: recentMatches.rows
+    });
+
+  } catch (error) {
+    console.error('Error fetching database stats:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fetch database stats',
+      message: (error as Error).message
+    });
+  }
+});
+
 export default router;
