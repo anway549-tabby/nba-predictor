@@ -119,8 +119,12 @@ async function startServer() {
       console.log('=====================================\n');
     });
 
-    // Check if today's refresh has already run
-    await checkAndRunStartupRefresh();
+    // Skip startup refresh in production to avoid crashes during deployment
+    if (process.env.NODE_ENV !== 'production') {
+      await checkAndRunStartupRefresh();
+    } else {
+      console.log('⏭️  Skipping startup refresh in production (use scheduled cron job instead)\n');
+    }
 
     // Setup daily data refresh cron job (ESPN)
     // Runs every day at 12:00 Noon IST (6:30 AM UTC)
