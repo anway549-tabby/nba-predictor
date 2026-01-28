@@ -14,6 +14,7 @@
     "backfill:old": "ts-node src/services/ingestion/backfillLast15Games.ts",
     "refresh:daily": "ts-node src/services/ingestion/dailyRefreshESPN.ts",
     "refresh:old": "ts-node src/services/ingestion/dailyRefreshJob.ts",
+    "refresh:times": "ts-node src/services/ingestion/refreshScheduleTimes.ts",
     "test:espn": "ts-node src/services/ingestion/testEspnApi.ts",
     "test:schedule": "ts-node src/services/ingestion/testFreeApi.ts"
   },
