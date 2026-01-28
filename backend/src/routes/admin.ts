@@ -221,4 +221,44 @@ router.post('/refresh-times', async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * POST /api/admin/fix-times
+ * Fix incorrect times by subtracting 5.5 hours from all scheduled matches
+ */
+router.post('/fix-times', async (req: Request, res: Response) => {
+  try {
+    console.log('🔧 Fixing incorrect schedule times...');
+
+    // Get all scheduled matches with incorrect times
+    const result = await pool.query(`
+      UPDATE matches
+      SET game_time = game_time - INTERVAL '5.5 hours',
+          game_date = (game_time - INTERVAL '5.5 hours')::date
+      WHERE status = 'scheduled'
+      RETURNING id, nba_game_id, game_time
+    `);
+
+    console.log(`✅ Fixed ${result.rows.length} matches`);
+
+    res.json({
+      success: true,
+      message: `Fixed ${result.rows.length} scheduled match times`,
+      updated: result.rows.length,
+      sample: result.rows.slice(0, 5).map(r => ({
+        id: r.id,
+        gameId: r.nba_game_id,
+        newTime: r.game_time
+      }))
+    });
+
+  } catch (error) {
+    console.error('❌ Fix failed:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to fix times',
+      message: (error as Error).message
+    });
+  }
+});
+
 export default router;
