@@ -449,4 +449,48 @@ router.get('/db-stats', async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * POST /api/admin/run-backfill
+ * Manually trigger the backfill job to load historical data
+ */
+router.post('/run-backfill', async (req: Request, res: Response) => {
+  try {
+    console.log('🔄 Manually triggering backfill...');
+
+    // Get parameters from request body (optional)
+    const targetGames = req.body?.targetGames || 500;
+    const maxDaysBack = req.body?.maxDaysBack || 120;
+
+    // Dynamic import to avoid loading at startup
+    const { backfillESPN } = require('../services/ingestion/backfillESPN');
+
+    // Run in background but don't wait for completion
+    backfillESPN(targetGames, maxDaysBack)
+      .then((result: any) => {
+        console.log('✅ Backfill completed successfully:', result);
+      })
+      .catch((error: Error) => {
+        console.error('❌ Backfill failed:', error);
+      });
+
+    // Return immediately
+    res.json({
+      success: true,
+      message: `Backfill job started in background. Target: ${targetGames} games over ${maxDaysBack} days. This will take ~90 minutes. Check logs for progress.`,
+      parameters: {
+        targetGames,
+        maxDaysBack
+      }
+    });
+
+  } catch (error) {
+    console.error('❌ Failed to start backfill:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to start backfill',
+      message: (error as Error).message
+    });
+  }
+});
+
 export default router;
