@@ -337,4 +337,40 @@ router.get('/debug-match/:matchId', async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * POST /api/admin/run-daily-refresh
+ * Manually trigger the daily refresh job
+ */
+router.post('/run-daily-refresh', async (req: Request, res: Response) => {
+  try {
+    console.log('🔄 Manually triggering daily refresh...');
+
+    // Dynamic import to avoid loading at startup
+    const { runDailyRefreshESPN } = require('../services/ingestion/dailyRefreshESPN');
+
+    // Run in background but don't wait for completion
+    runDailyRefreshESPN()
+      .then(() => {
+        console.log('✅ Daily refresh completed successfully');
+      })
+      .catch((error: Error) => {
+        console.error('❌ Daily refresh failed:', error);
+      });
+
+    // Return immediately
+    res.json({
+      success: true,
+      message: 'Daily refresh job started in background. Check logs for progress.'
+    });
+
+  } catch (error) {
+    console.error('❌ Failed to start refresh:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to start daily refresh',
+      message: (error as Error).message
+    });
+  }
+});
+
 export default router;
