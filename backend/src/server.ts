@@ -8,6 +8,7 @@ import pool, { testConnection } from './config/database';
 import matchesRouter from './routes/matches';
 import playersRouter from './routes/players';
 import predictionsRouter from './routes/predictions';
+import adminRouter from './routes/admin';
 
 // Import daily refresh job (ESPN-based)
 import { runDailyRefreshESPN } from './services/ingestion/dailyRefreshESPN';
@@ -62,6 +63,7 @@ app.get('/', (req: Request, res: Response) => {
 app.use('/api/matches', matchesRouter);
 app.use('/api/players', playersRouter);
 app.use('/api/predictions', predictionsRouter);
+app.use('/api/admin', adminRouter);
 
 /**
  * Check if today's refresh has run, if not run it immediately
