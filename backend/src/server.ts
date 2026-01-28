@@ -110,11 +110,13 @@ async function startServer() {
     }
 
     // Start Express server
-    app.listen(PORT, () => {
+    // Bind to 0.0.0.0 for Railway and other cloud platforms
+    const HOST = process.env.HOST || '0.0.0.0';
+    app.listen(PORT, HOST, () => {
       console.log('\n🚀 NBA Predictor Backend Server Started');
       console.log('=====================================');
-      console.log(`✓ Server running on http://localhost:${PORT}`);
-      console.log(`✓ Health check: http://localhost:${PORT}/health`);
+      console.log(`✓ Server running on http://${HOST}:${PORT}`);
+      console.log(`✓ Health check: http://${HOST}:${PORT}/health`);
       console.log(`✓ Environment: ${process.env.NODE_ENV || 'development'}`);
       console.log('=====================================\n');
     });
