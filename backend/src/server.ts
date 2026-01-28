@@ -17,7 +17,8 @@ import { runDailyRefreshESPN } from './services/ingestion/dailyRefreshESPN';
 dotenv.config();
 
 const app = express();
-const PORT = parseInt(process.env.PORT || '3001');
+// Railway and most cloud platforms use PORT environment variable or default to 8080
+const PORT = parseInt(process.env.PORT || '8080');
 
 // Middleware
 app.use(cors()); // Enable CORS for frontend
