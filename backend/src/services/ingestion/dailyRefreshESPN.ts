@@ -126,16 +126,19 @@ export async function runDailyRefreshESPN(): Promise<DailyRefreshResult> {
     }
 
     // ============================================
-    // STEP 3: Fetch upcoming games (next 7 days)
+    // STEP 3: Fetch upcoming games (next 7 days starting from TOMORROW)
     // ============================================
+    // PRD: After 12:00 Noon IST refresh, today should not be available
+    // Schedule shows tomorrow + next 6 days = 7 days total
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    console.log('📅 STEP 3: Fetching Upcoming Games (Next 7 Days)');
+    console.log('📅 STEP 3: Fetching Upcoming Games (Tomorrow + 6 Days)');
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
     const upcomingGames: any[] = [];
 
-    // Fetch games for the next 7 days
-    for (let daysAhead = 0; daysAhead < 7; daysAhead++) {
+    // Fetch games for the next 7 days starting from TOMORROW (daysAhead = 1)
+    // PRD: Today's games are not shown after noon refresh
+    for (let daysAhead = 1; daysAhead <= 7; daysAhead++) {
       const targetDate = new Date();
       targetDate.setDate(targetDate.getDate() + daysAhead);
       const dateStr = targetDate.toISOString().split('T')[0];

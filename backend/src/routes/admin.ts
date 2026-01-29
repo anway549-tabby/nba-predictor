@@ -493,4 +493,45 @@ router.post('/run-backfill', async (req: Request, res: Response) => {
   }
 });
 
+/**
+ * POST /api/admin/cleanup-old-schedule
+ * Remove today's scheduled matches (per PRD, only tomorrow+ should be shown)
+ */
+router.post('/cleanup-old-schedule', async (req: Request, res: Response) => {
+  try {
+    // Get today's date in IST
+    const now = new Date();
+    const istOffset = 5.5 * 60 * 60 * 1000;
+    const istNow = new Date(now.getTime() + istOffset);
+    const todayIST = istNow.toISOString().split('T')[0];
+
+    console.log(`🧹 Cleaning up scheduled matches for today (${todayIST}) and earlier...`);
+
+    // Delete scheduled matches for today and past dates
+    const result = await pool.query(`
+      DELETE FROM matches
+      WHERE status = 'scheduled'
+        AND DATE(game_time AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata') <= $1
+      RETURNING id, nba_game_id, game_time
+    `, [todayIST]);
+
+    console.log(`✅ Removed ${result.rows.length} old scheduled matches`);
+
+    res.json({
+      success: true,
+      message: `Removed ${result.rows.length} scheduled matches for today (${todayIST}) and earlier`,
+      removed: result.rows.length,
+      sample: result.rows.slice(0, 5)
+    });
+
+  } catch (error) {
+    console.error('Error cleaning up schedule:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to cleanup schedule',
+      message: (error as Error).message
+    });
+  }
+});
+
 export default router;
