@@ -4,7 +4,7 @@
  * Runs every day at 12:00 Noon IST
  * 1. Fetches completed games from yesterday (ESPN)
  * 2. Fetches and saves player stats for those games
- * 3. Fetches upcoming games for today
+ * 3. Fetches upcoming games for the next 7 days (PRD requirement)
  * 4. Generates predictions for upcoming games within 24 hours
  *
  * Usage:
@@ -126,18 +126,40 @@ export async function runDailyRefreshESPN(): Promise<DailyRefreshResult> {
     }
 
     // ============================================
-    // STEP 3: Fetch upcoming games (today)
+    // STEP 3: Fetch upcoming games (next 7 days)
     // ============================================
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
-    console.log('📅 STEP 3: Fetching Upcoming Games (Today)');
+    console.log('📅 STEP 3: Fetching Upcoming Games (Next 7 Days)');
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
-    const todayGames = await fetchESPNScoreboard(todayStr);
-    const upcomingGames = todayGames
-      .map(g => convertESPNGame(g))
-      .filter(g => g.status === 'scheduled');
+    const upcomingGames: any[] = [];
 
-    console.log(`✓ Found ${upcomingGames.length} upcoming games for today\n`);
+    // Fetch games for the next 7 days
+    for (let daysAhead = 0; daysAhead < 7; daysAhead++) {
+      const targetDate = new Date();
+      targetDate.setDate(targetDate.getDate() + daysAhead);
+      const dateStr = targetDate.toISOString().split('T')[0];
+
+      console.log(`  Fetching games for ${dateStr}...`);
+
+      try {
+        const dayGames = await fetchESPNScoreboard(dateStr);
+        const scheduledGames = dayGames
+          .map(g => convertESPNGame(g))
+          .filter(g => g.status === 'scheduled');
+
+        console.log(`    ✓ Found ${scheduledGames.length} scheduled games`);
+        upcomingGames.push(...scheduledGames);
+
+        // Small delay between API calls
+        await new Promise(resolve => setTimeout(resolve, 300));
+      } catch (error) {
+        console.error(`    ❌ Error fetching games for ${dateStr}:`, error);
+        result.errors.push(`Failed to fetch games for ${dateStr}`);
+      }
+    }
+
+    console.log(`\n✓ Total upcoming games found: ${upcomingGames.length}\n`);
 
     if (upcomingGames.length === 0) {
       console.log('ℹ️  No upcoming games to process\n');
@@ -153,7 +175,7 @@ export async function runDailyRefreshESPN(): Promise<DailyRefreshResult> {
 
       for (const game of upcomingGames) {
         try {
-          console.log(`Processing: ${game.awayTeam.abbreviation} @ ${game.homeTeam.abbreviation}`);
+          console.log(`Processing: ${game.awayTeam.abbreviation} @ ${game.homeTeam.abbreviation} (${game.gameDate})`);
 
           // Save game
           const matchId = await saveESPNGame(game);
