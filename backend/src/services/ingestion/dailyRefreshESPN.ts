@@ -18,7 +18,7 @@ import {
   parseESPNPlayerStats,
   convertESPNGame
 } from './espnApiClient';
-import { saveESPNGame, saveESPNPlayerStat, logDataRefresh } from './espnDataStorage';
+import { saveESPNGame, saveESPNPlayerStat, logDataRefresh, isNBATeam } from './espnDataStorage';
 import { generatePredictionsForMatch } from '../prediction/predictionService';
 import pool from '../../config/database';
 
@@ -68,9 +68,16 @@ export async function runDailyRefreshESPN(): Promise<DailyRefreshResult> {
     console.log('📊 STEP 1: Fetching Completed Games (Yesterday)');
     console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
 
-    const completedGames = await fetchCompletedGames(yesterdayStr);
+    const allCompletedGames = await fetchCompletedGames(yesterdayStr);
 
-    console.log(`✓ Found ${completedGames.length} completed games from yesterday\n`);
+    // Filter out All-Star / exhibition games
+    const completedGames = allCompletedGames.filter(g =>
+      isNBATeam(g.homeTeam.abbreviation) && isNBATeam(g.awayTeam.abbreviation)
+    );
+    const skippedCompleted = allCompletedGames.length - completedGames.length;
+    if (skippedCompleted > 0) console.log(`⏭️  Skipped ${skippedCompleted} non-NBA game(s) (All-Star/exhibition)\n`);
+
+    console.log(`✓ Found ${completedGames.length} completed NBA games from yesterday\n`);
 
     if (completedGames.length === 0) {
       console.log('ℹ️  No completed games to process\n');

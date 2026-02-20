@@ -13,7 +13,7 @@ import {
   fetchESPNGameSummary,
   parseESPNPlayerStats
 } from './espnApiClient';
-import { saveESPNGame, saveESPNPlayerStat, logDataRefresh } from './espnDataStorage';
+import { saveESPNGame, saveESPNPlayerStat, logDataRefresh, isNBATeam } from './espnDataStorage';
 
 interface BackfillResult {
   datesProcessed: number;
@@ -70,8 +70,15 @@ async function backfillESPN(
 
         console.log(`  ✓ Found ${completedGames.length} completed game(s)`);
 
+        // Filter out All-Star / exhibition games before processing
+        const nbaGames = completedGames.filter(g =>
+          isNBATeam(g.homeTeam.abbreviation) && isNBATeam(g.awayTeam.abbreviation)
+        );
+        const skipped = completedGames.length - nbaGames.length;
+        if (skipped > 0) console.log(`  ⏭️  Skipped ${skipped} non-NBA game(s)`);
+
         // Process each completed game
-        for (const game of completedGames) {
+        for (const game of nbaGames) {
           try {
             console.log(
               `    Processing: ${game.awayTeam.abbreviation} ${game.awayTeam.score} @ ${game.homeTeam.abbreviation} ${game.homeTeam.score}`

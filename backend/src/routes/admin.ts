@@ -536,6 +536,69 @@ router.post('/run-backfill', async (req: Request, res: Response) => {
 });
 
 /**
+ * POST /api/admin/fix-allstar-corruption
+ * Fix players whose current_team_id was corrupted by All-Star game data.
+ * Reassigns them to the team they played for in their most recent regular-season game.
+ */
+router.post('/fix-allstar-corruption', async (req: Request, res: Response) => {
+  try {
+    const NBA_ABBRS = [
+      'ATL','BOS','BKN','CHA','CHI','CLE','DAL','DEN','DET','GS',
+      'HOU','IND','LAC','LAL','MEM','MIA','MIL','MIN','NO','NY',
+      'OKC','ORL','PHI','PHX','POR','SA','SAC','TOR','UTAH','WSH'
+    ];
+
+    // Find players whose current team is NOT one of the 30 NBA teams
+    const corrupted = await pool.query(`
+      SELECT p.id, p.first_name || ' ' || p.last_name as name, t.abbreviation as bad_team
+      FROM players p
+      JOIN teams t ON p.current_team_id = t.id
+      WHERE t.abbreviation NOT IN (${NBA_ABBRS.map((_,i) => `$${i+1}`).join(',')})
+    `, NBA_ABBRS);
+
+    console.log(`Found ${corrupted.rows.length} corrupted player(s)`);
+    const fixed = [];
+    const failed = [];
+
+    for (const player of corrupted.rows) {
+      // Find their most recent stat against a real NBA team to determine real team
+      const lastGame = await pool.query(`
+        SELECT t.id as team_id, t.abbreviation
+        FROM player_game_stats pgs
+        JOIN teams t ON pgs.team_id = t.id
+        WHERE pgs.player_id = $1
+          AND t.abbreviation IN (${NBA_ABBRS.map((_,i) => `$${i+2}`).join(',')})
+        ORDER BY pgs.game_date DESC
+        LIMIT 1
+      `, [player.id, ...NBA_ABBRS]);
+
+      if (lastGame.rows.length > 0) {
+        await pool.query(
+          'UPDATE players SET current_team_id = $1 WHERE id = $2',
+          [lastGame.rows[0].team_id, player.id]
+        );
+        fixed.push({ name: player.name, from: player.bad_team, to: lastGame.rows[0].abbreviation });
+        console.log(`  ✅ ${player.name}: ${player.bad_team} → ${lastGame.rows[0].abbreviation}`);
+      } else {
+        failed.push({ name: player.name, team: player.bad_team });
+        console.log(`  ⚠️  ${player.name}: no regular-season games found`);
+      }
+    }
+
+    res.json({
+      success: true,
+      corruptedFound: corrupted.rows.length,
+      fixed: fixed.length,
+      failed: failed.length,
+      details: { fixed, failed }
+    });
+  } catch (error) {
+    console.error('Error fixing All-Star corruption:', error);
+    res.status(500).json({ success: false, error: (error as Error).message });
+  }
+});
+
+/**
  * POST /api/admin/cleanup-old-schedule
  * Remove today's scheduled matches (per PRD, only tomorrow+ should be shown)
  */

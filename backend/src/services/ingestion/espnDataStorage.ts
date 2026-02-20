@@ -7,6 +7,20 @@
 import pool from '../../config/database';
 
 /**
+ * The 30 official NBA team abbreviations.
+ * Any game/team outside this set is treated as exhibition/All-Star and skipped.
+ */
+const NBA_TEAM_ABBREVIATIONS = new Set([
+  'ATL', 'BOS', 'BKN', 'CHA', 'CHI', 'CLE', 'DAL', 'DEN', 'DET', 'GS',
+  'HOU', 'IND', 'LAC', 'LAL', 'MEM', 'MIA', 'MIL', 'MIN', 'NO', 'NY',
+  'OKC', 'ORL', 'PHI', 'PHX', 'POR', 'SA', 'SAC', 'TOR', 'UTAH', 'WSH'
+]);
+
+export function isNBATeam(abbreviation: string): boolean {
+  return NBA_TEAM_ABBREVIATIONS.has(abbreviation.toUpperCase());
+}
+
+/**
  * ESPN Game format (converted)
  */
 interface ESPNGameConverted {
@@ -39,6 +53,12 @@ interface ESPNPlayerStatsConverted {
  * @returns Database match ID
  */
 export async function saveESPNGame(game: ESPNGameConverted): Promise<number> {
+  // Skip All-Star / exhibition games — they corrupt player team assignments
+  if (!isNBATeam(game.homeTeam.abbreviation) || !isNBATeam(game.awayTeam.abbreviation)) {
+    console.log(`  ⏭️  Skipping non-NBA game: ${game.awayTeam.abbreviation} @ ${game.homeTeam.abbreviation}`);
+    return -1;
+  }
+
   const client = await pool.connect();
 
   try {
@@ -127,6 +147,12 @@ export async function saveESPNPlayerStat(
   stat: ESPNPlayerStatsConverted,
   matchId: number
 ): Promise<void> {
+  // matchId of -1 means the game was skipped (All-Star/exhibition)
+  if (matchId === -1) return;
+
+  // Skip stats for non-NBA teams
+  if (!isNBATeam(stat.teamAbbr)) return;
+
   const client = await pool.connect();
 
   try {
@@ -291,13 +317,13 @@ async function ensureESPNPlayerExists(
   );
 
   if (existing.rows.length > 0) {
-    // Update current team
+    // Update current team only if it's a real NBA team (not All-Star/exhibition)
     const teamDbIdResult = await client.query(
-      'SELECT id FROM teams WHERE nba_team_id::text = $1',
+      `SELECT t.id, t.abbreviation FROM teams t WHERE t.nba_team_id::text = $1`,
       [currentTeamId]
     );
 
-    if (teamDbIdResult.rows.length > 0) {
+    if (teamDbIdResult.rows.length > 0 && isNBATeam(teamDbIdResult.rows[0].abbreviation)) {
       await client.query(
         'UPDATE players SET current_team_id = $1 WHERE id = $2',
         [teamDbIdResult.rows[0].id, existing.rows[0].id]
