@@ -349,14 +349,14 @@ router.get('/player-lookup', async (req: Request, res: Response) => {
     }
 
     const players = await pool.query(`
-      SELECT p.id, p.first_name, p.last_name, p.espn_id,
+      SELECT p.id, p.first_name, p.last_name,
              t.abbreviation as team, t.name as team_name,
              COUNT(pgs.id) as game_count
       FROM players p
       LEFT JOIN teams t ON p.current_team_id = t.id
       LEFT JOIN player_game_stats pgs ON p.id = pgs.player_id
       WHERE LOWER(p.first_name || ' ' || p.last_name) LIKE LOWER($1)
-      GROUP BY p.id, p.first_name, p.last_name, p.espn_id, t.abbreviation, t.name
+      GROUP BY p.id, p.first_name, p.last_name, t.abbreviation, t.name
       ORDER BY game_count DESC
     `, [`%${name}%`]);
 
