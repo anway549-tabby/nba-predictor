@@ -338,6 +338,48 @@ router.get('/debug-match/:matchId', async (req: Request, res: Response) => {
 });
 
 /**
+ * GET /api/admin/player-lookup?name=Anthony Edwards
+ * Look up a player's data and game count
+ */
+router.get('/player-lookup', async (req: Request, res: Response) => {
+  try {
+    const name = req.query.name as string;
+    if (!name) {
+      return res.status(400).json({ success: false, error: 'name query param required' });
+    }
+
+    const players = await pool.query(`
+      SELECT p.id, p.first_name, p.last_name, p.espn_id,
+             t.abbreviation as team, t.name as team_name,
+             COUNT(pgs.id) as game_count
+      FROM players p
+      LEFT JOIN teams t ON p.current_team_id = t.id
+      LEFT JOIN player_game_stats pgs ON p.id = pgs.player_id
+      WHERE LOWER(p.first_name || ' ' || p.last_name) LIKE LOWER($1)
+      GROUP BY p.id, p.first_name, p.last_name, p.espn_id, t.abbreviation, t.name
+      ORDER BY game_count DESC
+    `, [`%${name}%`]);
+
+    // For each found player get recent game dates
+    const results = await Promise.all(players.rows.map(async (p: any) => {
+      const recentGames = await pool.query(`
+        SELECT pgs.game_date, t.abbreviation as opponent, pgs.points, pgs.rebounds, pgs.assists
+        FROM player_game_stats pgs
+        LEFT JOIN teams t ON pgs.opponent_team_id = t.id
+        WHERE pgs.player_id = $1
+        ORDER BY pgs.game_date DESC
+        LIMIT 5
+      `, [p.id]);
+      return { ...p, recentGames: recentGames.rows };
+    }));
+
+    res.json({ success: true, count: results.length, data: results });
+  } catch (error) {
+    res.status(500).json({ success: false, error: (error as Error).message });
+  }
+});
+
+/**
  * POST /api/admin/run-daily-refresh
  * Manually trigger the daily refresh job
  */
