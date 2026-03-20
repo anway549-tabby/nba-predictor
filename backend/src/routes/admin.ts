@@ -338,6 +338,75 @@ router.get('/debug-match/:matchId', async (req: Request, res: Response) => {
 });
 
 /**
+ * POST /api/admin/purge-allstar-data
+ * Delete All-Star / exhibition game data from player_game_stats and matches tables.
+ */
+router.post('/purge-allstar-data', async (req: Request, res: Response) => {
+  try {
+    const NBA_ABBRS = [
+      'ATL','BOS','BKN','CHA','CHI','CLE','DAL','DEN','DET','GS',
+      'HOU','IND','LAC','LAL','MEM','MIA','MIL','MIN','NO','NY',
+      'OKC','ORL','PHI','PHX','POR','SA','SAC','TOR','UTAH','WSH'
+    ];
+    const placeholders = NBA_ABBRS.map((_,i) => `$${i+1}`).join(',');
+
+    // Find non-NBA teams
+    const nonNBATeams = await pool.query(
+      `SELECT id, abbreviation, name FROM teams WHERE abbreviation NOT IN (${placeholders})`,
+      NBA_ABBRS
+    );
+    console.log(`Found ${nonNBATeams.rows.length} non-NBA team(s):`, nonNBATeams.rows.map((t: any) => t.abbreviation));
+
+    if (nonNBATeams.rows.length === 0) {
+      return res.json({ success: true, message: 'No non-NBA teams found — nothing to purge' });
+    }
+
+    const nonNBATeamIds = nonNBATeams.rows.map((t: any) => t.id);
+
+    // Delete player_game_stats for those teams
+    const statsDeleted = await pool.query(
+      `DELETE FROM player_game_stats WHERE team_id = ANY($1) OR opponent_team_id = ANY($1)`,
+      [nonNBATeamIds]
+    );
+
+    // Delete predictions tied to those matches
+    const nonNBAMatches = await pool.query(
+      `SELECT id FROM matches WHERE home_team_id = ANY($1) OR away_team_id = ANY($1)`,
+      [nonNBATeamIds]
+    );
+    const matchIds = nonNBAMatches.rows.map((m: any) => m.id);
+
+    let predictionsDeleted = { rowCount: 0 };
+    if (matchIds.length > 0) {
+      predictionsDeleted = await pool.query(
+        `DELETE FROM predictions WHERE match_id = ANY($1)`,
+        [matchIds]
+      );
+    }
+
+    // Delete those matches
+    const matchesDeleted = await pool.query(
+      `DELETE FROM matches WHERE home_team_id = ANY($1) OR away_team_id = ANY($1)`,
+      [nonNBATeamIds]
+    );
+
+    // Delete the non-NBA teams themselves
+    await pool.query(`DELETE FROM teams WHERE id = ANY($1)`, [nonNBATeamIds]);
+
+    res.json({
+      success: true,
+      nonNBATeams: nonNBATeams.rows.map((t: any) => t.abbreviation),
+      statsDeleted: statsDeleted.rowCount,
+      matchesDeleted: matchesDeleted.rowCount,
+      predictionsDeleted: predictionsDeleted.rowCount
+    });
+  } catch (error) {
+    console.error('Error purging All-Star data:', error);
+    res.status(500).json({ success: false, error: (error as Error).message });
+  }
+});
+
+/**
  * GET /api/admin/player-lookup?name=Anthony Edwards
  * Look up a player's data and game count
  */
@@ -375,6 +444,47 @@ router.get('/player-lookup', async (req: Request, res: Response) => {
 
     res.json({ success: true, count: results.length, data: results });
   } catch (error) {
+    res.status(500).json({ success: false, error: (error as Error).message });
+  }
+});
+
+/**
+ * POST /api/admin/regenerate-predictions
+ * Delete and regenerate predictions for all upcoming matches (status = scheduled).
+ */
+router.post('/regenerate-predictions', async (req: Request, res: Response) => {
+  try {
+    const { generatePredictionsForMatch } = require('../services/prediction/predictionService');
+
+    // Get all upcoming scheduled matches
+    const upcomingMatches = await pool.query(`
+      SELECT m.id, m.game_date, ht.abbreviation as home, at.abbreviation as away
+      FROM matches m
+      JOIN teams ht ON m.home_team_id = ht.id
+      JOIN teams at ON m.away_team_id = at.id
+      WHERE m.status = 'scheduled'
+      ORDER BY m.game_date ASC
+    `);
+
+    console.log(`🔄 Regenerating predictions for ${upcomingMatches.rows.length} matches...`);
+
+    const results = [];
+    for (const match of upcomingMatches.rows) {
+      // Clear existing predictions for this match
+      await pool.query('DELETE FROM predictions WHERE match_id = $1', [match.id]);
+
+      const predictions = await generatePredictionsForMatch(match.id);
+      results.push({ matchId: match.id, matchup: `${match.away} @ ${match.home}`, predictions: predictions.length });
+      console.log(`  ✅ ${match.away} @ ${match.home}: ${predictions.length} predictions`);
+    }
+
+    res.json({
+      success: true,
+      matchesProcessed: results.length,
+      results
+    });
+  } catch (error) {
+    console.error('Error regenerating predictions:', error);
     res.status(500).json({ success: false, error: (error as Error).message });
   }
 });

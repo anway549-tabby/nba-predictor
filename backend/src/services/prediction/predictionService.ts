@@ -52,7 +52,7 @@ export async function generatePredictionsForMatch(matchId: number): Promise<Play
 
     // Get all players from both teams
     const playersResult = await client.query(
-      `SELECT DISTINCT p.id, p.first_name, p.last_name, t.abbreviation as team
+      `SELECT DISTINCT p.id, p.first_name, p.last_name, t.abbreviation as team, p.current_team_id as team_id
        FROM players p
        JOIN teams t ON p.current_team_id = t.id
        WHERE t.id = $1 OR t.id = $2`,
@@ -70,39 +70,80 @@ export async function generatePredictionsForMatch(matchId: number): Promise<Play
 
     for (const player of playersResult.rows) {
       try {
-        // Get player's last 15 games
-        const statsResult = await client.query(
+        // Get team's last 15 completed NBA games (per PRD: use team schedule, not player history)
+        // This ensures players who recently joined the team still get predictions,
+        // with 0-minute placeholders for games before they arrived.
+        const teamGamesResult = await client.query(
           `SELECT
-             pgs.game_date as date,
-             t.abbreviation as opponent,
-             pgs.minutes_played as minutes,
-             pgs.points,
-             pgs.rebounds,
-             pgs.assists,
-             pgs.is_imputed as "isImputed"
-           FROM player_game_stats pgs
-           JOIN teams t ON pgs.opponent_team_id = t.id
-           WHERE pgs.player_id = $1
-           ORDER BY pgs.game_date DESC
+             m.id as match_id,
+             m.game_date,
+             CASE WHEN m.home_team_id = $1 THEN m.away_team_id ELSE m.home_team_id END as opponent_team_id
+           FROM matches m
+           JOIN teams ht ON m.home_team_id = ht.id
+           JOIN teams at ON m.away_team_id = at.id
+           WHERE (m.home_team_id = $1 OR m.away_team_id = $1)
+             AND m.status = 'final'
+             AND ht.abbreviation IN ('ATL','BOS','BKN','CHA','CHI','CLE','DAL','DEN','DET','GS',
+                                     'HOU','IND','LAC','LAL','MEM','MIA','MIL','MIN','NO','NY',
+                                     'OKC','ORL','PHI','PHX','POR','SA','SAC','TOR','UTAH','WSH')
+             AND at.abbreviation IN ('ATL','BOS','BKN','CHA','CHI','CLE','DAL','DEN','DET','GS',
+                                     'HOU','IND','LAC','LAL','MEM','MIA','MIL','MIN','NO','NY',
+                                     'OKC','ORL','PHI','PHX','POR','SA','SAC','TOR','UTAH','WSH')
+           ORDER BY m.game_date DESC
            LIMIT 15`,
-          [player.id]
+          [player.team_id]
         );
 
-        // Need exactly 15 games for prediction
-        if (statsResult.rows.length < 15) {
-          console.log(`  ⏩ Skipping ${player.first_name} ${player.last_name} - only ${statsResult.rows.length} games`);
+        if (teamGamesResult.rows.length < 15) {
+          console.log(`  ⏩ Skipping ${player.first_name} ${player.last_name} - team only has ${teamGamesResult.rows.length} recorded games`);
           continue;
         }
 
-        const last15Games: GameStat[] = statsResult.rows.map((row: any) => ({
-          date: row.date,
-          opponent: row.opponent,
-          minutes: row.minutes,
-          points: row.points,
-          rebounds: row.rebounds,
-          assists: row.assists,
-          isImputed: row.isImputed
-        }));
+        // For each team game, fetch player's stats or use 0-minute placeholder
+        const last15Games: GameStat[] = await Promise.all(
+          teamGamesResult.rows.map(async (teamGame: any) => {
+            const statRow = await client.query(
+              `SELECT
+                 pgs.minutes_played as minutes,
+                 pgs.points,
+                 pgs.rebounds,
+                 pgs.assists,
+                 t.abbreviation as opponent
+               FROM player_game_stats pgs
+               JOIN teams t ON pgs.opponent_team_id = t.id
+               WHERE pgs.player_id = $1 AND pgs.match_id = $2`,
+              [player.id, teamGame.match_id]
+            );
+
+            if (statRow.rows.length > 0) {
+              const r = statRow.rows[0];
+              return {
+                date: teamGame.game_date,
+                opponent: r.opponent,
+                minutes: r.minutes,
+                points: r.points,
+                rebounds: r.rebounds,
+                assists: r.assists,
+                isImputed: false
+              };
+            }
+
+            // Player wasn't on the team / didn't play — treat as 0-minute game
+            const opponentResult = await client.query(
+              'SELECT abbreviation FROM teams WHERE id = $1',
+              [teamGame.opponent_team_id]
+            );
+            return {
+              date: teamGame.game_date,
+              opponent: opponentResult.rows[0]?.abbreviation ?? 'UNK',
+              minutes: 0,
+              points: 0,
+              rebounds: 0,
+              assists: 0,
+              isImputed: false
+            };
+          })
+        );
 
         // Generate prediction using prediction engine
         const prediction = generatePrediction({
