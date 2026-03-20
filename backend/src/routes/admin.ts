@@ -376,12 +376,13 @@ router.post('/purge-allstar-data', async (req: Request, res: Response) => {
     );
     const matchIds = nonNBAMatches.rows.map((m: any) => m.id);
 
-    let predictionsDeleted = { rowCount: 0 };
+    let predictionsDeletedCount = 0;
     if (matchIds.length > 0) {
-      predictionsDeleted = await pool.query(
+      const r = await pool.query(
         `DELETE FROM predictions WHERE match_id = ANY($1)`,
         [matchIds]
       );
+      predictionsDeletedCount = r.rowCount ?? 0;
     }
 
     // Delete those matches
@@ -396,9 +397,9 @@ router.post('/purge-allstar-data', async (req: Request, res: Response) => {
     res.json({
       success: true,
       nonNBATeams: nonNBATeams.rows.map((t: any) => t.abbreviation),
-      statsDeleted: statsDeleted.rowCount,
-      matchesDeleted: matchesDeleted.rowCount,
-      predictionsDeleted: predictionsDeleted.rowCount
+      statsDeleted: statsDeleted.rowCount ?? 0,
+      matchesDeleted: matchesDeleted.rowCount ?? 0,
+      predictionsDeleted: predictionsDeletedCount
     });
   } catch (error) {
     console.error('Error purging All-Star data:', error);
