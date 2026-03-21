@@ -430,17 +430,40 @@ router.get('/player-lookup', async (req: Request, res: Response) => {
       ORDER BY game_count DESC
     `, [`%${name}%`]);
 
-    // For each found player get recent game dates
+    // For each found player get all games used in predictions (team's last 15)
     const results = await Promise.all(players.rows.map(async (p: any) => {
-      const recentGames = await pool.query(`
-        SELECT pgs.game_date, t.abbreviation as opponent, pgs.points, pgs.rebounds, pgs.assists
-        FROM player_game_stats pgs
-        LEFT JOIN teams t ON pgs.opponent_team_id = t.id
-        WHERE pgs.player_id = $1
-        ORDER BY pgs.game_date DESC
-        LIMIT 5
-      `, [p.id]);
-      return { ...p, recentGames: recentGames.rows };
+      // Get the team's last 15 completed NBA games
+      const NBA_ABBRS = ['ATL','BOS','BKN','CHA','CHI','CLE','DAL','DEN','DET','GS',
+        'HOU','IND','LAC','LAL','MEM','MIA','MIL','MIN','NO','NY',
+        'OKC','ORL','PHI','PHX','POR','SA','SAC','TOR','UTAH','WSH'];
+
+      const teamGames = await pool.query(`
+        SELECT m.id as match_id, m.game_date,
+               CASE WHEN m.home_team_id = p.current_team_id THEN at.abbreviation ELSE ht.abbreviation END as opponent
+        FROM players p
+        JOIN matches m ON (m.home_team_id = p.current_team_id OR m.away_team_id = p.current_team_id)
+        JOIN teams ht ON m.home_team_id = ht.id
+        JOIN teams at ON m.away_team_id = at.id
+        WHERE p.id = $1 AND m.status = 'final'
+          AND ht.abbreviation = ANY($2) AND at.abbreviation = ANY($2)
+        ORDER BY m.game_date DESC
+        LIMIT 15
+      `, [p.id, NBA_ABBRS]);
+
+      const predictionGames = await Promise.all(teamGames.rows.map(async (tg: any) => {
+        const stat = await pool.query(`
+          SELECT pgs.minutes_played, pgs.points, pgs.rebounds, pgs.assists
+          FROM player_game_stats pgs
+          WHERE pgs.player_id = $1 AND pgs.match_id = $2
+        `, [p.id, tg.match_id]);
+        if (stat.rows.length > 0) {
+          const s = stat.rows[0];
+          return { date: tg.game_date, opponent: tg.opponent, minutes: s.minutes_played, points: s.points, rebounds: s.rebounds, assists: s.assists, source: 'real' };
+        }
+        return { date: tg.game_date, opponent: tg.opponent, minutes: 0, points: 0, rebounds: 0, assists: 0, source: 'placeholder' };
+      }));
+
+      return { ...p, predictionGames };
     }));
 
     res.json({ success: true, count: results.length, data: results });
