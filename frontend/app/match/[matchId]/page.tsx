@@ -70,7 +70,8 @@ export default function MatchDetail() {
       setPredictions(result.data || []);
     } catch (error) {
       console.error('Error loading predictions:', error);
-      setMessage('Failed to load predictions');
+      setAvailable(false);
+      setMessage('Failed to load predictions. Please refresh and try again.');
     } finally {
       setLoading(false);
     }

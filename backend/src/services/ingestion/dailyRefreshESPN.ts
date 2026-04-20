@@ -220,7 +220,53 @@ export async function runDailyRefreshESPN(): Promise<DailyRefreshResult> {
     }
 
     // ============================================
-    // STEP 5: Log the refresh operation
+    // STEP 5: Catch-all — generate predictions for any DB-scheduled match
+    // within 24 hours that still has 0 predictions.
+    // Needed because ESPN schedule dates are ET-based while our fetch loop
+    // uses UTC dates, causing late-night ET games to be missed above.
+    // ============================================
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━');
+    console.log('🔍 STEP 5: Catch-all Prediction Check (DB scan)');
+    console.log('━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n');
+
+    try {
+      const unpredictedMatches = await pool.query(`
+        SELECT m.id, m.game_time,
+               ht.abbreviation as home, at.abbreviation as away
+        FROM matches m
+        JOIN teams ht ON m.home_team_id = ht.id
+        JOIN teams at ON m.away_team_id = at.id
+        WHERE m.status = 'scheduled'
+          AND m.game_time > NOW()
+          AND m.game_time <= NOW() + INTERVAL '24 hours'
+          AND NOT EXISTS (SELECT 1 FROM predictions p WHERE p.match_id = m.id)
+        ORDER BY m.game_time
+      `);
+
+      if (unpredictedMatches.rows.length === 0) {
+        console.log('✓ No missed matches — all upcoming 24h games have predictions\n');
+      } else {
+        console.log(`⚠️  Found ${unpredictedMatches.rows.length} match(es) within 24h with no predictions\n`);
+        for (const row of unpredictedMatches.rows) {
+          const hoursUntil = ((new Date(row.game_time).getTime() - Date.now()) / 3600000).toFixed(1);
+          console.log(`  Generating for: ${row.away} @ ${row.home} (in ${hoursUntil}h)...`);
+          try {
+            const preds = await generatePredictionsForMatch(row.id);
+            result.predictions += preds.length;
+            console.log(`  ✓ Generated ${preds.length} predictions\n`);
+          } catch (err) {
+            const msg = `Catch-all prediction failed for match ${row.id}: ${err}`;
+            console.error(`  ❌ ${msg}\n`);
+            result.errors.push(msg);
+          }
+        }
+      }
+    } catch (err) {
+      console.error('❌ Catch-all prediction step failed:', err);
+    }
+
+    // ============================================
+    // STEP 6: Log the refresh operation
     // ============================================
     await logDataRefresh(
       todayStr,
