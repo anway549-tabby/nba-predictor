@@ -7,7 +7,21 @@
 
 import pool from '../../config/database';
 import { generatePrediction } from './predictionEngine';
-import { GameStat } from '../../types';
+import { GameStat, PREDICTABLE_SEASON_TYPES } from '../../types';
+
+/**
+ * Thrown when a match is not eligible for predictions at all (preseason or
+ * unknown season type). Distinct from an error, so callers can skip quietly.
+ */
+export class MatchNotPredictableError extends Error {
+  constructor(matchId: number, seasonType: number | null) {
+    super(
+      `Match ${matchId} is not predictable (season_type=${seasonType ?? 'unknown'}). ` +
+      `Only regular season (2) and playoffs (3) are predicted.`
+    );
+    this.name = 'MatchNotPredictableError';
+  }
+}
 
 export interface PlayerPrediction {
   playerId: number;
@@ -37,6 +51,7 @@ export async function generatePredictionsForMatch(matchId: number): Promise<Play
          m.id,
          m.game_time,
          m.status,
+         m.season_type,
          m.home_team_id,
          m.away_team_id
        FROM matches m
@@ -49,6 +64,15 @@ export async function generatePredictionsForMatch(matchId: number): Promise<Play
     }
 
     const match = matchResult.rows[0];
+
+    // Only regular season and playoff games are predicted. Preseason
+    // ("practice") games are explicitly out of scope, and a NULL season_type
+    // means we have not confirmed what the game is — so it is not predicted
+    // either. Fail before touching rosters so nothing is written.
+    if (!PREDICTABLE_SEASON_TYPES.includes(match.season_type)) {
+      await client.query('ROLLBACK');
+      throw new MatchNotPredictableError(matchId, match.season_type);
+    }
 
     // Get all players from both teams
     const playersResult = await client.query(
@@ -70,8 +94,18 @@ export async function generatePredictionsForMatch(matchId: number): Promise<Play
 
     for (const player of playersResult.rows) {
       try {
-        // Get player's last 15 games this season (any team, excluding All-Star/exhibition).
-        // Stats from any NBA team the player appeared for count — trades don't matter.
+        // Get the player's last 15 QUALIFYING games.
+        //
+        // Qualifying means a real NBA regular-season or playoff game:
+        //   - m.season_type IN (2, 3)  excludes preseason ("practice") games.
+        //   - both teams are real NBA franchises. This is what excludes the
+        //     All-Star Game: ESPN labels the 2026 All-Star events (WORLD /
+        //     STARS / STRIPES) as season_type 2 "regular-season", so the
+        //     season_type filter alone would let them through.
+        //
+        // Deliberately NOT filtered by season or by team: the window is the
+        // player's complete history, and crossing a season boundary or a trade
+        // is fine. Whichever 15 qualifying games are most recent are the 15.
         const statsResult = await client.query(
           `SELECT
              pgs.game_date as date,
@@ -83,7 +117,9 @@ export async function generatePredictionsForMatch(matchId: number): Promise<Play
            FROM player_game_stats pgs
            JOIN teams opp ON pgs.opponent_team_id = opp.id
            JOIN teams own ON pgs.team_id = own.id
+           JOIN matches m ON pgs.match_id = m.id
            WHERE pgs.player_id = $1
+             AND m.season_type = ANY($2::int[])
              AND opp.abbreviation IN ('ATL','BOS','BKN','CHA','CHI','CLE','DAL','DEN','DET','GS',
                                       'HOU','IND','LAC','LAL','MEM','MIA','MIL','MIN','NO','NY',
                                       'OKC','ORL','PHI','PHX','POR','SA','SAC','TOR','UTAH','WSH')
@@ -92,18 +128,25 @@ export async function generatePredictionsForMatch(matchId: number): Promise<Play
                                       'OKC','ORL','PHI','PHX','POR','SA','SAC','TOR','UTAH','WSH')
            ORDER BY pgs.game_date DESC
            LIMIT 15`,
-          [player.id]
+          [player.id, PREDICTABLE_SEASON_TYPES]
         );
 
-        if (statsResult.rows.length === 0) {
-          console.log(`  ⏩ Skipping ${player.first_name} ${player.last_name} - no game data`);
+        // A full 15-game window is required — no padding.
+        //
+        // Padding used to fill the gap with 0-minute rows, which the engine
+        // then imputed from the player's own average. That turned a 1-game
+        // sample into 15 identical values, so the PRD's "14 of 15" test passed
+        // on a single game and produced a confident-looking prop from nothing.
+        // A player without 15 qualifying games simply gets no prediction.
+        if (statsResult.rows.length < 15) {
+          console.log(
+            `  ⏩ Skipping ${player.first_name} ${player.last_name} - ` +
+            `only ${statsResult.rows.length}/15 qualifying games`
+          );
           continue;
         }
 
-        // Build the 15-game array.
-        // If player has < 15 season games (genuinely limited by injury), pad to 15
-        // with 0-minute entries — predictionEngine will impute those from the player's average.
-        const realGames: GameStat[] = statsResult.rows.map((row: any) => ({
+        const last15Games: GameStat[] = statsResult.rows.map((row: any) => ({
           date: row.date,
           opponent: row.opponent,
           minutes: row.minutes,
@@ -112,21 +155,6 @@ export async function generatePredictionsForMatch(matchId: number): Promise<Play
           assists: row.assists,
           isImputed: false
         }));
-
-        const last15Games: GameStat[] = realGames.length >= 15
-          ? realGames  // already limited to 15 by LIMIT 15
-          : [
-              ...realGames,
-              ...Array(15 - realGames.length).fill({
-                date: realGames[realGames.length - 1].date,
-                opponent: 'N/A',
-                minutes: 0,
-                points: 0,
-                rebounds: 0,
-                assists: 0,
-                isImputed: false
-              })
-            ];
 
         // Generate prediction using prediction engine
         const prediction = generatePrediction({

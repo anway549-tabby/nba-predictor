@@ -118,3 +118,21 @@ CREATE TABLE IF NOT EXISTS data_refresh_log (
     error_message TEXT,
     created_at TIMESTAMP DEFAULT NOW()
 );
+
+-- ---------------------------------------------------------------------------
+-- Season type on matches (additive migration — safe to re-run)
+-- ---------------------------------------------------------------------------
+-- `season` above is a LABEL ("2025-26"); it does not say whether a game is
+-- preseason, regular season or playoffs. Predictions are only valid for
+-- regular season and playoffs (PRD: "Regular season + playoffs"), and only
+-- those games may count toward a player's last-15 window, so the type has to
+-- be stored per match.
+--
+-- Values are ESPN's `season.type`: 1 = preseason, 2 = regular, 3 = postseason.
+-- NULL means "not yet backfilled" and is treated as NOT predictable.
+ALTER TABLE matches ADD COLUMN IF NOT EXISTS season_type INTEGER;
+ALTER TABLE matches ADD COLUMN IF NOT EXISTS season_slug VARCHAR(20);
+
+-- Predictions and the last-15 window both filter on season_type, and the
+-- stats window joins matches for every player on every match generated.
+CREATE INDEX IF NOT EXISTS idx_matches_season_type ON matches(season_type);

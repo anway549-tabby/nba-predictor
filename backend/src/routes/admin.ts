@@ -7,7 +7,10 @@ import { Router, Request, Response } from 'express';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import pool from '../config/database';
-import { generatePredictionsForMatch } from '../services/prediction/predictionService';
+import { generatePredictionsForMatch, MatchNotPredictableError } from '../services/prediction/predictionService';
+import { syncRosters } from '../services/ingestion/syncRosters';
+import { backfillSeasonType } from '../services/ingestion/backfillSeasonType';
+import { PREDICTABLE_SEASON_TYPES } from '../types';
 
 const router = Router();
 
@@ -77,8 +80,9 @@ router.post('/generate-predictions', async (req: Request, res: Response) => {
       WHERE m.status = 'scheduled'
         AND m.game_time <= $1
         AND m.game_time > $2
+        AND m.season_type = ANY($3::int[])
       ORDER BY m.game_time
-    `, [threshold, now]);
+    `, [threshold, now, PREDICTABLE_SEASON_TYPES]);
 
     console.log(`Found ${matchesResult.rows.length} scheduled matches`);
 
@@ -96,6 +100,15 @@ router.post('/generate-predictions', async (req: Request, res: Response) => {
         });
         successCount++;
       } catch (error) {
+        if (error instanceof MatchNotPredictableError) {
+          // Out of scope, not a failure.
+          results.push({
+            matchId: match.id,
+            match: `${match.away} @ ${match.home}`,
+            skipped: 'not a regular season or playoff game'
+          });
+          continue;
+        }
         results.push({
           matchId: match.id,
           match: `${match.away} @ ${match.home}`,
@@ -478,11 +491,10 @@ router.get('/player-lookup', async (req: Request, res: Response) => {
  */
 router.post('/regenerate-predictions', async (req: Request, res: Response) => {
   try {
-    const { generatePredictionsForMatch } = require('../services/prediction/predictionService');
-
-    // Get all upcoming scheduled matches
+    // Every scheduled match, with its season type so non-predictable ones can
+    // have stale predictions cleared without new ones being generated.
     const upcomingMatches = await pool.query(`
-      SELECT m.id, m.game_date, ht.abbreviation as home, at.abbreviation as away
+      SELECT m.id, m.game_date, m.season_type, ht.abbreviation as home, at.abbreviation as away
       FROM matches m
       JOIN teams ht ON m.home_team_id = ht.id
       JOIN teams at ON m.away_team_id = at.id
@@ -493,18 +505,37 @@ router.post('/regenerate-predictions', async (req: Request, res: Response) => {
     console.log(`🔄 Regenerating predictions for ${upcomingMatches.rows.length} matches...`);
 
     const results = [];
+    let skipped = 0;
+
     for (const match of upcomingMatches.rows) {
-      // Clear existing predictions for this match
+      // Clear existing predictions for this match. For a preseason match this
+      // is the whole job — nothing is generated to replace them.
       await pool.query('DELETE FROM predictions WHERE match_id = $1', [match.id]);
 
-      const predictions = await generatePredictionsForMatch(match.id);
-      results.push({ matchId: match.id, matchup: `${match.away} @ ${match.home}`, predictions: predictions.length });
-      console.log(`  ✅ ${match.away} @ ${match.home}: ${predictions.length} predictions`);
+      if (!PREDICTABLE_SEASON_TYPES.includes(match.season_type)) {
+        skipped++;
+        console.log(`  ⏭️  ${match.away} @ ${match.home}: not regular season/playoffs - cleared only`);
+        continue;
+      }
+
+      try {
+        const predictions = await generatePredictionsForMatch(match.id);
+        results.push({ matchId: match.id, matchup: `${match.away} @ ${match.home}`, predictions: predictions.length });
+        console.log(`  ✅ ${match.away} @ ${match.home}: ${predictions.length} predictions`);
+      } catch (error) {
+        if (error instanceof MatchNotPredictableError) {
+          skipped++;
+          console.log(`  ⏭️  ${match.away} @ ${match.home}: ${error.message}`);
+          continue;
+        }
+        throw error;
+      }
     }
 
     res.json({
       success: true,
       matchesProcessed: results.length,
+      matchesSkipped: skipped,
       results
     });
   } catch (error) {
@@ -768,6 +799,143 @@ router.post('/cleanup-old-schedule', async (req: Request, res: Response) => {
     res.status(500).json({
       success: false,
       error: 'Failed to cleanup schedule',
+      message: (error as Error).message
+    });
+  }
+});
+
+/**
+ * POST /api/admin/sync-rosters
+ * Rebuild players.current_team_id from ESPN's 30 current rosters.
+ *
+ * Players on a current roster are upserted onto that team; players on no
+ * current roster have their team cleared, which removes them from match
+ * rosters without touching their historical stats. Safe to re-run.
+ */
+router.post('/sync-rosters', async (req: Request, res: Response) => {
+  try {
+    const result = await syncRosters();
+
+    res.json({
+      success: true,
+      message:
+        `Synced ${result.teamsProcessed} rosters: ${result.teamChanged} players reassigned, ` +
+        `${result.playersCreated} created, ${result.playersCleared} cleared (no longer on a roster)`,
+      ...result
+    });
+  } catch (error) {
+    console.error('Error syncing rosters:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to sync rosters',
+      message: (error as Error).message
+    });
+  }
+});
+
+/**
+ * POST /api/admin/backfill-season-type
+ * Populate matches.season_type / season_slug from ESPN for existing rows.
+ *
+ * One-shot repair for matches created before the column existed. Until it
+ * runs, every match has season_type NULL and is therefore not predictable.
+ */
+router.post('/backfill-season-type', async (req: Request, res: Response) => {
+  try {
+    const result = await backfillSeasonType();
+
+    res.json({
+      success: true,
+      message: `Backfilled ${result.matchesUpdated}/${result.matchesTotal} matches`,
+      ...result
+    });
+  } catch (error) {
+    console.error('Error backfilling season type:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to backfill season type',
+      message: (error as Error).message
+    });
+  }
+});
+
+/**
+ * POST /api/admin/purge-unpredictable-predictions
+ * Delete predictions attached to any match that is not regular season or
+ * playoffs (preseason, or an unconfirmed NULL season type).
+ *
+ * Predictions are derived data and are regenerated by the daily refresh, so
+ * deleting them loses nothing. Run after backfill-season-type.
+ */
+router.post('/purge-unpredictable-predictions', async (req: Request, res: Response) => {
+  try {
+    const result = await pool.query(
+      `DELETE FROM predictions
+       WHERE match_id IN (
+         SELECT id FROM matches
+         WHERE season_type IS NULL OR NOT (season_type = ANY($1::int[]))
+       )
+       RETURNING match_id`,
+      [PREDICTABLE_SEASON_TYPES]
+    );
+
+    const affectedMatches = new Set(result.rows.map(r => r.match_id));
+
+    console.log(`Purged ${result.rowCount} predictions across ${affectedMatches.size} matches`);
+
+    res.json({
+      success: true,
+      message:
+        `Deleted ${result.rowCount} prediction(s) across ${affectedMatches.size} ` +
+        `non-regular-season match(es)`,
+      predictionsDeleted: result.rowCount,
+      matchesAffected: affectedMatches.size
+    });
+  } catch (error) {
+    console.error('Error purging predictions:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to purge predictions',
+      message: (error as Error).message
+    });
+  }
+});
+
+/**
+ * GET /api/admin/season-type-audit
+ * Distribution of season_type across matches, plus how many predictions hang
+ * off each bucket. Use it to confirm the backfill and purge both landed.
+ */
+router.get('/season-type-audit', async (req: Request, res: Response) => {
+  try {
+    const result = await pool.query(`
+      SELECT
+        m.season_type,
+        m.season_slug,
+        COUNT(DISTINCT m.id) as matches,
+        COUNT(p.id) as predictions
+      FROM matches m
+      LEFT JOIN predictions p ON p.match_id = m.id
+      GROUP BY m.season_type, m.season_slug
+      ORDER BY m.season_type NULLS FIRST
+    `);
+
+    res.json({
+      success: true,
+      predictableSeasonTypes: PREDICTABLE_SEASON_TYPES,
+      buckets: result.rows.map(r => ({
+        seasonType: r.season_type,
+        seasonSlug: r.season_slug,
+        matches: parseInt(r.matches, 10),
+        predictions: parseInt(r.predictions, 10),
+        predictable: PREDICTABLE_SEASON_TYPES.includes(r.season_type)
+      }))
+    });
+  } catch (error) {
+    console.error('Error auditing season types:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Failed to audit season types',
       message: (error as Error).message
     });
   }

@@ -15,6 +15,9 @@
     "refresh:daily": "ts-node src/services/ingestion/dailyRefreshESPN.ts",
     "refresh:old": "ts-node src/services/ingestion/dailyRefreshJob.ts",
     "refresh:times": "ts-node src/services/ingestion/refreshScheduleTimes.ts",
+    "sync:rosters": "ts-node src/services/ingestion/syncRosters.ts",
+    "backfill:seasontype": "ts-node src/services/ingestion/backfillSeasonType.ts",
+    "test:engine": "ts-node src/services/prediction/testPredictionEngine.ts",
     "test:espn": "ts-node src/services/ingestion/testEspnApi.ts",
     "test:schedule": "ts-node src/services/ingestion/testFreeApi.ts"
   },

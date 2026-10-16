@@ -19,7 +19,8 @@ import {
   convertESPNGame
 } from './espnApiClient';
 import { saveESPNGame, saveESPNPlayerStat, logDataRefresh, isNBATeam } from './espnDataStorage';
-import { generatePredictionsForMatch } from '../prediction/predictionService';
+import { generatePredictionsForMatch, MatchNotPredictableError } from '../prediction/predictionService';
+import { PREDICTABLE_SEASON_TYPES } from '../../types';
 import pool from '../../config/database';
 
 interface DailyRefreshResult {
@@ -196,6 +197,12 @@ export async function runDailyRefreshESPN(): Promise<DailyRefreshResult> {
           const now = new Date();
           const hoursUntilGame = (gameTime.getTime() - now.getTime()) / (1000 * 60 * 60);
 
+          // Preseason games are saved for the record but never predicted.
+          if (!PREDICTABLE_SEASON_TYPES.includes(game.seasonType as number)) {
+            console.log(`  ⏭️  ${game.seasonSlug ?? 'unknown season type'} - no predictions\n`);
+            continue;
+          }
+
           if (hoursUntilGame <= 24 && hoursUntilGame >= 0) {
             console.log(`  ⏰ Game starts in ${hoursUntilGame.toFixed(1)} hours - generating predictions...`);
 
@@ -239,9 +246,10 @@ export async function runDailyRefreshESPN(): Promise<DailyRefreshResult> {
         WHERE m.status = 'scheduled'
           AND m.game_time > NOW()
           AND m.game_time <= NOW() + INTERVAL '24 hours'
+          AND m.season_type = ANY($1::int[])
           AND NOT EXISTS (SELECT 1 FROM predictions p WHERE p.match_id = m.id)
         ORDER BY m.game_time
-      `);
+      `, [PREDICTABLE_SEASON_TYPES]);
 
       if (unpredictedMatches.rows.length === 0) {
         console.log('✓ No missed matches — all upcoming 24h games have predictions\n');
@@ -255,6 +263,11 @@ export async function runDailyRefreshESPN(): Promise<DailyRefreshResult> {
             result.predictions += preds.length;
             console.log(`  ✓ Generated ${preds.length} predictions\n`);
           } catch (err) {
+            if (err instanceof MatchNotPredictableError) {
+              // Not an error — the match is out of scope (preseason/unknown).
+              console.log(`  ⏭️  ${err.message}\n`);
+              continue;
+            }
             const msg = `Catch-all prediction failed for match ${row.id}: ${err}`;
             console.error(`  ❌ ${msg}\n`);
             result.errors.push(msg);

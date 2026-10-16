@@ -29,6 +29,13 @@ export interface ESPNGame {
   date: string;
   name: string; // "Team A at Team B"
   shortName: string; // "TEAM1 @ TEAM2"
+  // 1 = preseason, 2 = regular-season, 3 = post-season. Optional: a payload
+  // without it leaves seasonType null, which is treated as not predictable.
+  season?: {
+    year: number;
+    type: number;
+    slug: string;
+  };
   status: {
     type: {
       name: string; // "STATUS_SCHEDULED" | "STATUS_IN_PROGRESS" | "STATUS_FINAL"
@@ -226,6 +233,8 @@ export function convertESPNGame(espnGame: ESPNGame): {
   gameDate: string;
   gameTime: string;
   status: string;
+  seasonType: number | null;
+  seasonSlug: string | null;
   homeTeam: { id: string; abbreviation: string; name: string; score?: number };
   awayTeam: { id: string; abbreviation: string; name: string; score?: number };
 } {
@@ -245,6 +254,8 @@ export function convertESPNGame(espnGame: ESPNGame): {
     gameDate: espnGame.date.split('T')[0],
     gameTime: espnGame.date,
     status,
+    seasonType: espnGame.season?.type ?? null,
+    seasonSlug: espnGame.season?.slug ?? null,
     homeTeam: {
       id: homeTeam.team.id,
       abbreviation: homeTeam.team.abbreviation,

@@ -8,6 +8,7 @@
 
 import { Router, Request, Response } from 'express';
 import pool from '../config/database';
+import { PREDICTABLE_SEASON_TYPES } from '../types';
 
 const router = Router();
 
@@ -53,11 +54,12 @@ router.get('/dates', async (req: Request, res: Response) => {
         COUNT(*) as match_count
       FROM matches
       WHERE status = 'scheduled'
+        AND season_type = ANY($3::int[])
         AND DATE(game_time AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata') >= $1
         AND DATE(game_time AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata') < $2
       GROUP BY DATE(game_time AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata')
       ORDER BY date
-    `, [tomorrow.toISOString().split('T')[0], endDate.toISOString().split('T')[0]]);
+    `, [tomorrow.toISOString().split('T')[0], endDate.toISOString().split('T')[0], PREDICTABLE_SEASON_TYPES]);
 
     // Calculate which dates have predictions available (within 24 hours of now)
     const dates = result.rows.map(row => {
@@ -128,6 +130,8 @@ router.get('/', async (req: Request, res: Response) => {
         m.game_time as "gameTime",
         m.status,
         m.season,
+        m.season_type as "seasonType",
+        m.season_slug as "seasonSlug",
         json_build_object(
           'id', ht.id,
           'name', ht.name,
@@ -142,14 +146,15 @@ router.get('/', async (req: Request, res: Response) => {
       JOIN teams ht ON m.home_team_id = ht.id
       JOIN teams at ON m.away_team_id = at.id
       WHERE DATE(m.game_time AT TIME ZONE 'UTC' AT TIME ZONE 'Asia/Kolkata') = $1
+        AND m.season_type = ANY($2::int[])
     `;
 
-    const params: any[] = [date];
+    const params: any[] = [date, PREDICTABLE_SEASON_TYPES];
 
     // Add status filter if provided
     if (status) {
-      query += ` AND m.status = $2`;
       params.push(status);
+      query += ` AND m.status = $${params.length}`;
     }
 
     query += ` ORDER BY m.game_time`;

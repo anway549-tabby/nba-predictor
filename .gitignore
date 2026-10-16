@@ -48,3 +48,9 @@ Thumbs.db
 temp/
 tmp/
 scratchpad/
+
+# Windows "nul" device artifact — created by a stray shell redirect, never real
+nul
+
+# Claude Code scheduled-task lock (machine-local runtime state)
+.claude/scheduled_tasks.lock

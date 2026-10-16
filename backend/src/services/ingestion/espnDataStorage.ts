@@ -28,8 +28,29 @@ interface ESPNGameConverted {
   gameDate: string;
   gameTime: string;
   status: string;
+  // ESPN season.type (1 preseason / 2 regular / 3 postseason) and slug.
+  // Optional so older callers still compile; null persists as "unknown",
+  // which every predictability filter treats as not predictable.
+  seasonType?: number | null;
+  seasonSlug?: string | null;
   homeTeam: { id: string; abbreviation: string; name: string; score?: number };
   awayTeam: { id: string; abbreviation: string; name: string; score?: number };
+}
+
+/**
+ * Season label ("2026-27") for a game, derived from its date.
+ *
+ * An NBA season spans two calendar years and always starts in the autumn, so
+ * games in Jan-Jun belong to the season that began the previous year. This
+ * replaces a hardcoded '2025-26' that mislabelled every game after Jun 2026.
+ */
+function seasonLabelForDate(gameDate: string): string {
+  const d = new Date(gameDate);
+  const year = d.getUTCFullYear();
+  // July is the earliest a new season's fixtures appear; Jan-Jun is the tail
+  // of the season that started the previous calendar year.
+  const startYear = d.getUTCMonth() >= 6 ? year : year - 1;
+  return `${startYear}-${String((startYear + 1) % 100).padStart(2, '0')}`;
 }
 
 /**
@@ -91,16 +112,24 @@ export async function saveESPNGame(game: ESPNGameConverted): Promise<number> {
       // Update existing match
       matchId = existingMatch.rows[0].id;
 
+      // COALESCE so a payload that omits season info never erases a value we
+      // already backfilled for this match.
       await client.query(
         `UPDATE matches
          SET game_date = $1,
              game_time = $2,
-             status = $3
-         WHERE id = $4`,
+             status = $3,
+             season = $4,
+             season_type = COALESCE($5, season_type),
+             season_slug = COALESCE($6, season_slug)
+         WHERE id = $7`,
         [
           new Date(game.gameDate),
           new Date(game.gameTime),
           game.status,
+          seasonLabelForDate(game.gameDate),
+          game.seasonType ?? null,
+          game.seasonSlug ?? null,
           matchId
         ]
       );
@@ -109,16 +138,18 @@ export async function saveESPNGame(game: ESPNGameConverted): Promise<number> {
       const result = await client.query(
         `INSERT INTO matches (
            nba_game_id, game_date, game_time, status, season,
-           home_team_id, away_team_id
+           season_type, season_slug, home_team_id, away_team_id
          )
-         VALUES ($1, $2, $3, $4, $5, $6, $7)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
          RETURNING id`,
         [
           game.gameId,
           new Date(game.gameDate),
           new Date(game.gameTime),
           game.status,
-          '2025-26', // Current season
+          seasonLabelForDate(game.gameDate),
+          game.seasonType ?? null,
+          game.seasonSlug ?? null,
           homeTeamDbId,
           awayTeamDbId
         ]
