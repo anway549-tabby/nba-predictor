@@ -203,8 +203,13 @@ function run(): void {
     PREDICTABLE_SEASON_TYPES.includes(SEASON_TYPE.POSTSEASON));
   check('preseason is NOT predictable',
     !PREDICTABLE_SEASON_TYPES.includes(SEASON_TYPE.PRESEASON));
+  check('play-in is NOT predictable (decided 2026-10-17 — not regular season or playoffs)',
+    !PREDICTABLE_SEASON_TYPES.includes(SEASON_TYPE.PLAY_IN));
   check('an unknown (null) season type is NOT predictable',
     !PREDICTABLE_SEASON_TYPES.includes(null as unknown as number));
+  check('exactly two season types are predictable',
+    PREDICTABLE_SEASON_TYPES.length === 2,
+    `got ${PREDICTABLE_SEASON_TYPES.length}: ${PREDICTABLE_SEASON_TYPES.join(', ')}`);
 
   // --- Summary -----------------------------------------------------------
   console.log('\n----------------------------------------');

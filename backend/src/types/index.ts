@@ -43,10 +43,12 @@ export const QUALIFYING_COUNT = 14;
 // ---------------------------------------------------------------------------
 // Season types (ESPN `season.type`) — PRD scope is "Regular season + playoffs"
 // ---------------------------------------------------------------------------
-// Verified against ESPN's scoreboard on a spread of real dates:
-//   1 = preseason     (e.g. 2025-10-10, 2026-10-16)
+// Verified against ESPN's scoreboard on a spread of real dates, and against
+// the full backfill of all 1,238 matches:
+//   1 = preseason      (e.g. 2025-10-10, 2026-10-16)
 //   2 = regular-season (e.g. 2026-01-15)
 //   3 = post-season    (e.g. 2026-04-25, 2026-06-10)
+//   5 = play-in-season (the Play-In Tournament)
 //
 // CAUTION: season type does NOT identify the All-Star Game. ESPN labels the
 // 2026 All-Star events (WORLD / STARS / STRIPES) as type 2 "regular-season".
@@ -55,11 +57,22 @@ export const QUALIFYING_COUNT = 14;
 export const SEASON_TYPE = {
   PRESEASON: 1,
   REGULAR: 2,
-  POSTSEASON: 3
+  POSTSEASON: 3,
+  PLAY_IN: 5
 } as const;
 
 // The only season types that may be predicted, or counted toward a player's
-// last-15 window. Preseason ("practice") games are excluded from both.
+// last-15 window.
+//
+// Each exclusion is deliberate:
+//   PRESEASON — "practice" games, explicitly out of scope.
+//   PLAY_IN   — the PRD scopes this to "Regular season + playoffs", and the
+//               Play-In Tournament is officially neither; the NBA keeps its
+//               stats separate from regular-season totals. Decided
+//               2026-10-17: keep it out. Adding SEASON_TYPE.PLAY_IN to this
+//               list is all it would take to reverse that, so do not add it
+//               on the assumption it was an oversight.
+//   null      — a match whose type has not been confirmed is never predicted.
 export const PREDICTABLE_SEASON_TYPES: readonly number[] = [
   SEASON_TYPE.REGULAR,
   SEASON_TYPE.POSTSEASON
