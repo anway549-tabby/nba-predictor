@@ -40,6 +40,27 @@ export const THRESHOLDS = {
 // Qualifying count: 14 out of 15 games (as per PRD - DO NOT MODIFY)
 export const QUALIFYING_COUNT = 14;
 
+// Size of the prediction window (as per PRD - DO NOT MODIFY)
+export const WINDOW_SIZE = 15;
+
+// Minimum number of REAL games (ones the player actually appeared in) required
+// before a prop is produced. Games 9-15 of the window are imputed from the
+// player's own average, per the PRD's Minutes = 0 rule.
+//
+// WHY THERE IS A FLOOR AT ALL
+// Imputed values all equal the player's mean, so they clear or fail a
+// threshold as a single block. With only 1 real game, the other 14 values are
+// copies of it — "14 of 15" then passes on a one-game sample and invents a
+// confident prop. The floor is what stops that.
+//
+// WHY 8 (decided 2026-10-17)
+// A rookie qualifies about two and a half weeks into the season rather than
+// being excluded until his 15th appearance. At 8 real games a prop still needs
+// the mean to clear the threshold AND 7 of the 8 real games to clear it too.
+// Lowering this further weakens every prop; raising it to 15 removes
+// imputation entirely and excludes rookies and low-minute players.
+export const MIN_REAL_GAMES = 8;
+
 // ---------------------------------------------------------------------------
 // Season types (ESPN `season.type`) — PRD scope is "Regular season + playoffs"
 // ---------------------------------------------------------------------------

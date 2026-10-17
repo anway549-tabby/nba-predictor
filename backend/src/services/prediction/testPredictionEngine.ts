@@ -10,7 +10,15 @@
  */
 
 import { generatePrediction, shouldDisablePrediction } from './predictionEngine';
-import { GameStat, THRESHOLDS, QUALIFYING_COUNT, PREDICTABLE_SEASON_TYPES, SEASON_TYPE } from '../../types';
+import {
+  GameStat,
+  THRESHOLDS,
+  QUALIFYING_COUNT,
+  PREDICTABLE_SEASON_TYPES,
+  SEASON_TYPE,
+  MIN_REAL_GAMES,
+  WINDOW_SIZE
+} from '../../types';
 
 let passed = 0;
 let failed = 0;
@@ -148,12 +156,12 @@ function run(): void {
 
   // THE REGRESSION THIS FILE EXISTS FOR
   //
-  // A 1-real-game sample must never produce a prop. The service used to pad
-  // short windows with 0-minute rows, which the engine then imputed from that
-  // single game — 15 identical values, so "14 of 15" passed on one game.
-  // predictionService now refuses to build a window under 15 qualifying
-  // games. This test documents what the engine WOULD do with such a window,
-  // so the guard is never moved back down into the engine by mistake.
+  // The engine itself cannot tell a small sample from a large one: every
+  // imputed value is a copy of the player's mean, so padding a 1-game sample
+  // yields 15 identical values and "14 of 15" passes on that single game.
+  // This is why the floor lives in predictionService (MIN_REAL_GAMES), not
+  // here. The test pins the engine's behaviour so nobody concludes the engine
+  // is already safe and removes the service-level guard.
   out = generatePrediction({
     playerId: 1,
     matchId: 1,
@@ -163,10 +171,48 @@ function run(): void {
     )
   });
   check(
-    'padding a 1-game sample WOULD fabricate a 30+ prop (hence the service-level 15-game guard)',
+    'engine alone WOULD fabricate 30+ from one game — hence MIN_REAL_GAMES in the service',
     out.pointsThreshold === 30,
     `got ${out.pointsThreshold}`
   );
+
+  // --- The real-game floor ----------------------------------------------
+  console.log('\n== real-game floor (rookies / low-minute players) ==');
+
+  check('floor is 8 real games', MIN_REAL_GAMES === 8, `got ${MIN_REAL_GAMES}`);
+  check('window is 15', WINDOW_SIZE === 15, `got ${WINDOW_SIZE}`);
+  check('floor is below the window, so imputation is reachable',
+    MIN_REAL_GAMES < WINDOW_SIZE);
+  check('floor is high enough that imputed values cannot outnumber real ones',
+    MIN_REAL_GAMES > WINDOW_SIZE - MIN_REAL_GAMES,
+    `${MIN_REAL_GAMES} real vs ${WINDOW_SIZE - MIN_REAL_GAMES} imputed`);
+
+  // At the floor: 8 real games + 7 imputed. A consistent 20-point scorer
+  // should still earn the 20+ prop — this is the rookie case working.
+  out = generatePrediction({
+    playerId: 1,
+    matchId: 1,
+    last15Games: games(
+      [...Array(8).fill(20), ...Array(7).fill(0)],
+      { minutes: [...Array(8).fill(30), ...Array(7).fill(0)] }
+    )
+  });
+  check('8 real games at 20 + 7 imputed -> points 20 (rookie qualifies)',
+    out.pointsThreshold === 20, `got ${out.pointsThreshold}`);
+
+  // At the floor, one bad real game out of 8 breaks it: 7 real + 7 imputed
+  // clear the bar but that is 14 of 15 only if the mean also clears it.
+  // mean of [20 x7, 2] = round(17.75) = 18, which clears 15 but not 20.
+  out = generatePrediction({
+    playerId: 1,
+    matchId: 1,
+    last15Games: games(
+      [...Array(7).fill(20), 2, ...Array(7).fill(0)],
+      { minutes: [...Array(7).fill(30), 30, ...Array(7).fill(0)] }
+    )
+  });
+  check('an inconsistent 8-game sample drops to a lower threshold, not 20',
+    out.pointsThreshold === 15, `got ${out.pointsThreshold}`);
 
   // --- Per-stat independence --------------------------------------------
   console.log('\n== stats are evaluated independently ==');

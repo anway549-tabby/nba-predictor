@@ -7,7 +7,7 @@
 
 import pool from '../../config/database';
 import { generatePrediction } from './predictionEngine';
-import { GameStat, PREDICTABLE_SEASON_TYPES } from '../../types';
+import { GameStat, PREDICTABLE_SEASON_TYPES, MIN_REAL_GAMES, WINDOW_SIZE } from '../../types';
 
 /**
  * Thrown when a match is not eligible for predictions at all (preseason or
@@ -103,9 +103,15 @@ export async function generatePredictionsForMatch(matchId: number): Promise<Play
         //     STARS / STRIPES) as season_type 2 "regular-season", so the
         //     season_type filter alone would let them through.
         //
+        // These are the player's own APPEARANCES, not his team's fixtures: a
+        // DNP is never stored (parseESPNPlayerStats skips athletes with no
+        // stat line), so the window is the games he actually played. They need
+        // not be consecutive team games.
+        //
         // Deliberately NOT filtered by season or by team: the window is the
         // player's complete history, and crossing a season boundary or a trade
-        // is fine. Whichever 15 qualifying games are most recent are the 15.
+        // is fine — a traded player's games for his previous team still count.
+        // Whichever qualifying appearances are most recent are the window.
         const statsResult = await client.query(
           `SELECT
              pgs.game_date as date,
@@ -127,26 +133,28 @@ export async function generatePredictionsForMatch(matchId: number): Promise<Play
                                       'HOU','IND','LAC','LAL','MEM','MIA','MIL','MIN','NO','NY',
                                       'OKC','ORL','PHI','PHX','POR','SA','SAC','TOR','UTAH','WSH')
            ORDER BY pgs.game_date DESC
-           LIMIT 15`,
-          [player.id, PREDICTABLE_SEASON_TYPES]
+           LIMIT $3`,
+          [player.id, PREDICTABLE_SEASON_TYPES, WINDOW_SIZE]
         );
 
-        // A full 15-game window is required — no padding.
+        // At least MIN_REAL_GAMES games the player actually appeared in.
         //
-        // Padding used to fill the gap with 0-minute rows, which the engine
-        // then imputed from the player's own average. That turned a 1-game
-        // sample into 15 identical values, so the PRD's "14 of 15" test passed
-        // on a single game and produced a confident-looking prop from nothing.
-        // A player without 15 qualifying games simply gets no prediction.
-        if (statsResult.rows.length < 15) {
+        // Below the floor there is no prediction at all. Imputed values are
+        // all copies of the player's own mean, so they clear or fail a
+        // threshold as one block — with 1 real game the other 14 are copies of
+        // it and "14 of 15" passes on a single game. The floor is what makes
+        // the remaining imputation safe; see MIN_REAL_GAMES for why it is 8.
+        const realGameCount = statsResult.rows.length;
+
+        if (realGameCount < MIN_REAL_GAMES) {
           console.log(
             `  ⏩ Skipping ${player.first_name} ${player.last_name} - ` +
-            `only ${statsResult.rows.length}/15 qualifying games`
+            `only ${realGameCount} real game(s), need ${MIN_REAL_GAMES}`
           );
           continue;
         }
 
-        const last15Games: GameStat[] = statsResult.rows.map((row: any) => ({
+        const realGames: GameStat[] = statsResult.rows.map((row: any) => ({
           date: row.date,
           opponent: row.opponent,
           minutes: row.minutes,
@@ -155,6 +163,32 @@ export async function generatePredictionsForMatch(matchId: number): Promise<Play
           assists: row.assists,
           isImputed: false
         }));
+
+        // Pad up to the window with 0-minute entries. The engine imputes those
+        // from the player's own average (the PRD's Minutes = 0 rule), and
+        // marks them isImputed. Only reached when realGameCount is between the
+        // floor and the window size.
+        const last15Games: GameStat[] = realGames.length >= WINDOW_SIZE
+          ? realGames
+          : [
+              ...realGames,
+              ...Array.from({ length: WINDOW_SIZE - realGames.length }, () => ({
+                date: realGames[realGames.length - 1].date,
+                opponent: 'N/A',
+                minutes: 0,
+                points: 0,
+                rebounds: 0,
+                assists: 0,
+                isImputed: false
+              }))
+            ];
+
+        if (realGameCount < WINDOW_SIZE) {
+          console.log(
+            `  ℹ️  ${player.first_name} ${player.last_name}: ` +
+            `${realGameCount} real + ${WINDOW_SIZE - realGameCount} imputed`
+          );
+        }
 
         // Generate prediction using prediction engine
         const prediction = generatePrediction({
