@@ -8,6 +8,7 @@ import { readFileSync } from 'fs';
 import { join } from 'path';
 import pool from '../config/database';
 import { generatePredictionsForMatch, MatchNotPredictableError } from '../services/prediction/predictionService';
+import { runMigrations } from '../db/migrations';
 import { syncRosters } from '../services/ingestion/syncRosters';
 import { backfillSeasonType } from '../services/ingestion/backfillSeasonType';
 import { PREDICTABLE_SEASON_TYPES } from '../types';
@@ -22,14 +23,28 @@ router.post('/migrate', async (req: Request, res: Response) => {
   try {
     console.log('🔄 Starting database migration...');
 
-    // Read the schema file
-    const schemaPath = join(__dirname, '../db/schema.sql');
-    const schema = readFileSync(schemaPath, 'utf-8');
+    // schema.sql creates the base tables, but `tsc` does not copy .sql files
+    // into dist/, so on a deployed build the file is simply absent. That is
+    // not fatal: the tables already exist in any deployed environment, and
+    // the additive migrations below are what actually need to run.
+    let schemaApplied = false;
+    let schemaNote = '';
 
-    // Execute the schema
-    await pool.query(schema);
+    try {
+      const schemaPath = join(__dirname, '../db/schema.sql');
+      const schema = readFileSync(schemaPath, 'utf-8');
+      await pool.query(schema);
+      schemaApplied = true;
+    } catch (error) {
+      schemaNote = `schema.sql not applied (${(error as Error).message})`;
+      console.warn(`  ${schemaNote}`);
+    }
 
-    // Verify tables were created
+    // Always run the inline additive migrations — these carry the column
+    // changes and must land whether or not schema.sql was readable.
+    const migrations = await runMigrations(pool);
+
+    // Verify tables
     const result = await pool.query(`
       SELECT table_name
       FROM information_schema.tables
@@ -39,12 +54,26 @@ router.post('/migrate', async (req: Request, res: Response) => {
 
     const tables = result.rows.map(row => row.table_name);
 
+    if (migrations.failed.length > 0) {
+      console.error('❌ Some migrations failed');
+      return res.status(500).json({
+        success: false,
+        error: 'Some migrations failed',
+        schemaApplied,
+        schemaNote,
+        migrations,
+        tables
+      });
+    }
+
     console.log('✅ Migration completed successfully!');
-    console.log('Created tables:', tables);
 
     res.json({
       success: true,
       message: 'Database migration completed successfully',
+      schemaApplied,
+      schemaNote,
+      migrationsApplied: migrations.applied,
       tables
     });
 
